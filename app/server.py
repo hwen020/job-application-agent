@@ -96,7 +96,7 @@ class DemoServer(ThreadingHTTPServer):
                     raise
                 self.visitors[token] = session
                 self.allocations.append(now)
-            if not session.lock.acquire(blocking=False):
+            if not session.lock.acquire(timeout=0.25):
                 raise SessionUnavailable('A request is already running for this session.')
             session.touched = now
         try:
@@ -245,33 +245,36 @@ class Handler(BaseHTTPRequestHandler):
         try:
             with self.server.visitor(self.visitor_cookie(), path=='/api/dashboard') as (visitor, token), self.server.db(visitor.path) as db:
                 self.new_visitor_token = token
-                if path == '/api/dashboard':
-                    return self.respond(200, summary(db))
-                if path == '/api/evidence':
-                    return self.respond(200, review.fact_view(db))
-                if path.startswith('/api/demo/job/'):
-                    job_id = int(path.split('/')[-1])
-                    materials.job_record(db, job_id)
-                    version = db.execute('SELECT id FROM material_versions WHERE job_id=? ORDER BY version DESC LIMIT 1',
-                                         (job_id,)).fetchone()
-                    task = db.execute("SELECT task_id FROM runner_runs WHERE job_id=? AND mode='simulation' ORDER BY task_id DESC LIMIT 1",
-                                      (job_id,)).fetchone()
-                    return self.respond(200, {'material': materials.version_record(db, version[0]) if version else None,
-                                             'task': runner.view(db, task[0]) if task else None})
-                if path.startswith('/api/demo/tasks/'):
-                    task = demo_task(db, int(path.split('/')[-1]))
-                    return self.respond(200, runner.view(db, task['task_id']))
-                if path.startswith('/api/artifacts/'):
-                    _, _, _, identifier, filename = path.split('/')
-                    result = materials.artifact(db, int(identifier), filename)
-                    if result:
-                        mime = 'application/pdf' if filename.endswith('.pdf') else 'application/octet-stream'
-                        return self.respond(200, result, mime)
+                result, mime = self.read_visitor(db, path)
         except SessionUnavailable as error:
             return self.respond(429 if self.visitor_cookie() or path=='/api/dashboard' else 404, {'error': str(error)})
         except (ValueError, KeyError):
-            pass
-        self.respond(404, {'error': 'Resource not found.'})
+            return self.respond(404, {'error': 'Resource not found.'})
+        return self.respond(200, result, mime)
+
+    def read_visitor(self, db, path):
+        mime = 'application/json'
+        if path == '/api/dashboard':
+            return summary(db), mime
+        if path == '/api/evidence':
+            return review.fact_view(db), mime
+        if path.startswith('/api/demo/job/'):
+            job_id = int(path.split('/')[-1])
+            materials.job_record(db, job_id)
+            version = db.execute('SELECT id FROM material_versions WHERE job_id=? ORDER BY version DESC LIMIT 1',
+                                 (job_id,)).fetchone()
+            task = db.execute("SELECT task_id FROM runner_runs WHERE job_id=? AND mode='simulation' ORDER BY task_id DESC LIMIT 1",
+                              (job_id,)).fetchone()
+            return {'material': materials.version_record(db, version[0]) if version else None,
+                    'task': runner.view(db, task[0]) if task else None}, mime
+        if path.startswith('/api/demo/tasks/'):
+            task = demo_task(db, int(path.split('/')[-1]))
+            return runner.view(db, task['task_id']), mime
+        _, _, _, identifier, filename = path.split('/')
+        result = materials.artifact(db, int(identifier), filename)
+        if result:
+            return result, 'application/pdf' if filename.endswith('.pdf') else 'application/octet-stream'
+        raise ValueError('Artifact not found.')
 
     def read_json(self):
         size = int(self.headers.get('Content-Length', '0'))
@@ -309,9 +312,10 @@ class Handler(BaseHTTPRequestHandler):
                     if payload.get('confirmed') is not True:
                         raise ValueError('Confirm the reset of Synthetic Demo data.')
                     self.server.reset(visitor.path)
-                    return self.respond(200, {'reset': True})
-                with self.server.db(visitor.path) as db:
-                    result = self.action(db, path, payload, visitor.path)
+                    result = {'reset': True}
+                else:
+                    with self.server.db(visitor.path) as db:
+                        result = self.action(db, path, payload, visitor.path)
             return self.respond(200, result)
         except SessionUnavailable as error:
             return self.respond(429 if self.visitor_cookie() else 403, {'error': str(error)})
