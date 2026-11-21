@@ -1,8 +1,14 @@
 # Job Application Agent — Synthetic Demo
 
+[Live Demo](https://job-application-agent-demo.onrender.com/) · [4-minute walkthrough](DEMO_GUIDE.md) · [Deployment and validation](docs/RELEASE_VALIDATION.md)
+
+[![Portfolio CI](https://github.com/hwen020/job-application-agent/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/hwen020/job-application-agent/actions/workflows/ci.yml?query=branch%3Amain)
+
+**Synthetic Data Only · Mock ATS Only · No Real Job Submissions · Human Approval Required**
+
 A Python and SQLite portfolio application that follows a fictional job from JD parsing to a local Playwright receipt. Every job, organization, applicant, address and receipt in the demonstration is **Synthetic Demo**.
 
-![Synthetic Demo dashboard](docs/dashboard.png)
+![Live Synthetic Demo dashboard after a mock PageUp submission](docs/dashboard.png)
 
 ## Run locally
 

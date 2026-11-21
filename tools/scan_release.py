@@ -14,7 +14,7 @@ SOURCE = {
 FILES = {f'app/{name}.py' for name in SOURCE} | {
     '.dockerignore', '.env.example', '.gitignore', '.github/workflows/ci.yml',
     'README.md', 'ARCHITECTURE.md', 'DEMO_GUIDE.md', 'SECURITY.md', 'LICENSE-PENDING.md', 'LICENSE',
-    'requirements.txt', 'start.ps1', 'Dockerfile', 'render.yaml', 'docs/dashboard.png',
+    'requirements.txt', 'start.ps1', 'Dockerfile', 'render.yaml', 'docs/dashboard.png', 'docs/RELEASE_VALIDATION.md',
     'app/static/index.html', 'app/static/style.css', 'app/static/app.js', 'app/static/runner-fixture.js',
     'tests/test_demo.py', 'tools/scan_release.py',
 }

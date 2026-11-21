@@ -1,6 +1,13 @@
-# Walk through the Synthetic Demo
+# Four-minute Synthetic Demo walkthrough
 
-Start the app using the [README](README.md) and open the local dashboard at `http://127.0.0.1:8768`. Reset clears only your browser session's progress.
+Open the [Live Demo](https://job-application-agent-demo.onrender.com/) or start the app using the [README](README.md). Reset clears only your browser session's progress.
+
+| Time | What to show |
+| --- | --- |
+| 0:00–0:45 | Choose a fictional role and show the parsed JD, qualifications, and supporting evidence. |
+| 0:45–1:45 | Generate documents, review the PDF, and approve the exact material version. |
+| 1:45–3:15 | Run the Mock ATS, confirm the two paused questions, resume, review, and submit the mock form. |
+| 3:15–4:00 | Show the receipt, updated Pipeline, and Audit Trail. Reload to show recovery, then reset. |
 
 1. Open the dashboard and click **Reset demo** to clear the instance's demo progress.
 2. Choose **Synthetic Demo Backend Developer** for Mock PageUp or **Synthetic Demo Data Analyst** for Mock NEOGOV. Click **Open job & parse JD**.
