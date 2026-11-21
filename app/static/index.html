@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Job Application Agent | Synthetic Demo</title>
+<link rel="stylesheet" href="/style.css">
+<header><a href="/" class="brand">Job Application Agent</a><span class="badge">Synthetic Demo</span></header>
+<main>
+<section class="intro"><div><h1>Application dashboard</h1><p>Review fictional openings, prepare evidence-backed materials, and submit to a local mock ATS.</p></div>
+<button id="reset" class="secondary">Reset demo</button></section>
+<p id="message" role="status" aria-live="polite"></p>
+<section id="reports" aria-label="Reports"></section>
+<section class="panel" id="pipeline"><h2>Job Discovery / Pipeline</h2><div id="jobs"></div></section>
+<section id="workflow" class="panel" hidden><h2 id="jobTitle"></h2>
+<details><summary>Job description</summary><pre id="jd"></pre></details>
+<div id="matching"></div>
+<h3>Resume &amp; Cover Letter Studio</h3>
+<div id="facts"></div>
+<button id="generate">Generate materials</button>
+<div id="materials"></div>
+<div id="runner"></div>
+</section>
+<div class="report-grid">
+<section class="panel"><h2>Audit Trail</h2><ul id="audit"></ul></section>
+<section class="panel"><h2>Mock integrations</h2><ul id="providers"></ul></section>
+</div>
+</main>
+<script src="/app.js" defer></script>
+</html>
