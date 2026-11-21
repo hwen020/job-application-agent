@@ -105,6 +105,15 @@ class DemoTests(unittest.TestCase):
         self.request('/runtime/portfolio.sqlite3',status=404)
         self.request('/.env',status=404)
 
+    def test_healthz_is_read_only_and_independent_of_workflow_lock(self):
+        before = self.request('/api/dashboard')
+        with self.server.lock:
+            self.assertEqual(self.request('/healthz',headers={'Host':'example.invalid'}),{'status':'ok'})
+        self.assertEqual(self.request('/api/dashboard'),before)
+        with self.server.db() as db:
+            db.execute('ALTER TABLE jobs RENAME TO temporary_jobs')
+        self.assertEqual(self.request('/healthz',status=503),{'status':'unavailable'})
+
     def test_pipeline_reconciles_a_committed_receipt_once(self):
         self.prepare(self.request('/api/dashboard')['jobs'][0])
         task = self.request('/api/demo/tasks',{'job_id':1})

@@ -2,8 +2,12 @@ services:
   - type: web
     name: job-application-agent-portfolio
     runtime: docker
+    plan: free
+    autoDeployTrigger: "off"
     dockerfilePath: ./Dockerfile
-    healthCheckPath: /api/dashboard
+    healthCheckPath: /healthz
     envVars:
       - key: DEMO_BIND
         value: 0.0.0.0
+      - key: PORT
+        value: "10000"

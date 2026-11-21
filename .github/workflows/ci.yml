@@ -15,4 +15,5 @@ jobs:
       - run: pip install -r requirements.txt
       - run: python -m playwright install --with-deps chromium
       - run: python tools/scan_release.py
+      - run: git show --format= --check HEAD
       - run: python -m unittest discover -s tests -v

@@ -112,6 +112,14 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         url = urlsplit(self.path)
         path = url.path
+        if path == '/healthz':
+            try:
+                uri = self.server.path.resolve().as_uri()+'?mode=ro'
+                with closing(sqlite3.connect(uri, uri=True, timeout=0.25)) as db:
+                    db.execute('SELECT id FROM jobs LIMIT 1').fetchone()
+            except sqlite3.Error:
+                return self.respond(503, {'status': 'unavailable'})
+            return self.respond(200, {'status': 'ok'})
         if path in ASSETS:
             name, mime = ASSETS[path]
             return self.respond(200, (ROOT/'app'/'static'/name).read_bytes(), mime)

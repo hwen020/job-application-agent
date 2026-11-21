@@ -39,4 +39,10 @@ python -m unittest discover -s tests -v
 python tools/scan_release.py
 ```
 
-Docker and Render configuration are included for a future deployment. The hosted demo uses instance-local state and resets when that ephemeral filesystem is replaced.
+## Hosting configuration
+
+The Docker image runs the app as a non-root user and listens on `0.0.0.0:10000` by default. The Render Blueprint selects Free, disables automatic deploys, and probes `GET /healthz`. The probe checks SQLite readiness without running the browser workflow. The hosted demo shares synthetic state across visitors. Free services can spin down and lose local SQLite state when the instance restarts.
+
+## License
+
+[MIT](LICENSE) © 2026 Hairu Wen.
