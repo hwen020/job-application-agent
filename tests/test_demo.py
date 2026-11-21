@@ -21,13 +21,18 @@ class DemoTests(unittest.TestCase):
         self.addCleanup(self.server.server_close)
         Thread(target=self.server.serve_forever, daemon=True).start()
         self.addCleanup(self.server.shutdown)
+        self.cookie = ''
+        self.request('/api/dashboard')
 
     def request(self, path, payload=None, status=200, headers=None):
         with closing(HTTPConnection('127.0.0.1', self.server.server_port, timeout=40)) as client:
             client.request('GET' if payload is None else 'POST', path, None if payload is None else json.dumps(payload),
-                           {'Content-Type':'application/json',**(headers or {})})
+                           {'Content-Type':'application/json','Cookie':self.cookie,**(headers or {})})
             response = client.getresponse()
             raw = response.read()
+            cookie = response.getheader('Set-Cookie')
+            if cookie:
+                self.cookie = cookie.split(';',1)[0]
             self.assertEqual(response.status, status, raw[:250])
             return json.loads(raw) if response.getheader('Content-Type').startswith('application/json') else raw
 
@@ -101,7 +106,7 @@ class DemoTests(unittest.TestCase):
         self.request('/api/demo/tasks',{'job_id':1,'mode':'official'},status=400)
         self.request('/api/demo/reset',{'confirmed':True},status=400,headers={'Origin':'https://example.invalid'})
         self.request('/api/runner/mock-receipt',{'key':'fake'},status=403,headers={'Host':'example.invalid'})
-        self.request('/api/runner/mock-receipt',{'key':'fake'},status=400)
+        self.request('/api/runner/mock-receipt',{'key':'fake'},status=403)
         self.request('/runtime/portfolio.sqlite3',status=404)
         self.request('/.env',status=404)
 
@@ -117,9 +122,36 @@ class DemoTests(unittest.TestCase):
     def test_pipeline_reconciles_a_committed_receipt_once(self):
         self.prepare(self.request('/api/dashboard')['jobs'][0])
         task = self.request('/api/demo/tasks',{'job_id':1})
-        with self.server.db() as db:
+        visitor = self.server.visitors[self.cookie.split('=',1)[1]]
+        with self.server.db(visitor.path) as db:
             db.execute("UPDATE runner_runs SET submitted_receipt='SYNTHETIC-DEMO-RECOVERY' WHERE task_id=?",(task['task_id'],))
         first = self.request('/api/dashboard')
         second = self.request('/api/dashboard')
         self.assertEqual(first,second)
         self.assertEqual(second['reports']['simulated_receipts'],1)
+
+    def test_two_browser_contexts_cannot_share_application_data(self):
+        from playwright.sync_api import sync_playwright
+        from app.runner_browser import launch_options
+
+        self.prepare(self.request('/api/dashboard')['jobs'][0])
+        task = self.request('/api/demo/tasks',{'job_id':1})
+        alpha_cookie = self.cookie.split('=',1)[1]
+        base = self.server.fixture_base
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(**launch_options())
+            try:
+                alpha, beta = [browser.new_context() for _ in range(2)]
+                alpha.add_cookies([{'name':'portfolio_session','value':alpha_cookie,'url':base}])
+                self.assertEqual(beta.request.get(base+'/api/dashboard').status,200)
+                artifact = base+'/api/artifacts/1/Resume.pdf'
+                target = base+'/api/demo/tasks/'+str(task['task_id'])
+                self.assertEqual(beta.request.get(artifact).status,404)
+                self.assertEqual(beta.request.get(target).status,404)
+                self.assertEqual(beta.request.post(base+'/api/demo/approve',
+                                                   data={'version_id':1,'confirmed':True}).status,400)
+                self.assertEqual(beta.request.post(base+'/api/demo/reset',data={'confirmed':True}).status,200)
+                self.assertEqual(alpha.request.get(artifact).status,200)
+                self.assertEqual(alpha.request.get(target).status,200)
+            finally:
+                browser.close()

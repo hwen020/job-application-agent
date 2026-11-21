@@ -1,12 +1,16 @@
 """Portfolio-only HTTP API with a closed route and fixture allowlist."""
 from contextlib import closing, contextmanager
+from collections import deque
+from http.cookies import SimpleCookie, CookieError
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
+import secrets
 from pathlib import Path
 import sqlite3
-from tempfile import NamedTemporaryFile
-from threading import RLock
+from tempfile import NamedTemporaryFile, TemporaryDirectory
+from threading import BoundedSemaphore, RLock
+from time import monotonic
 from urllib.parse import parse_qs, urlsplit
 
 from . import materials, review, runner, runner_fixtures, seed, storage
@@ -15,16 +19,101 @@ from .providers import providers
 ROOT = Path(__file__).resolve().parent.parent
 ASSETS = {'/': ('index.html', 'text/html'), '/app.js': ('app.js', 'application/javascript'),
           '/style.css': ('style.css', 'text/css'), '/runner-fixture.js': ('runner-fixture.js', 'application/javascript')}
+SESSION_TTL = 1800
+SESSION_LIMIT = 64
+
+
+class SessionUnavailable(ValueError):
+    pass
+
+
+class Visitor:
+    def __init__(self, directory, now):
+        self.directory = TemporaryDirectory(dir=directory)
+        self.path = Path(self.directory.name)/'demo.sqlite3'
+        self.lock = RLock()
+        self.touched = now
+        self.actions = deque()
 
 
 class DemoServer(ThreadingHTTPServer):
     def __init__(self, address, path):
         self.path = path
         self.lock = RLock()
+        self.visitors = {}
+        self.fixtures = {}
+        self.allocations = deque()
+        self.fixture_secret = secrets.token_urlsafe(32)
+        self.browser_slot = BoundedSemaphore(1)
+        self.connections = BoundedSemaphore(32)
         path.parent.mkdir(parents=True, exist_ok=True)
         with self.db() as db:
             seed.initialize(db)
         super().__init__(address, Handler)
+
+    def process_request(self, request, address):
+        if not self.connections.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request,address)
+        except Exception:
+            self.connections.release()
+            raise
+
+    def process_request_thread(self, request, address):
+        try:
+            super().process_request_thread(request,address)
+        finally:
+            self.connections.release()
+
+    @contextmanager
+    def visitor(self, token, create):
+        with self.lock:
+            now = monotonic()
+            for key, old in list(self.visitors.items()):
+                if now-old.touched >= SESSION_TTL and old.lock.acquire(blocking=False):
+                    try:
+                        old.directory.cleanup()
+                        del self.visitors[key]
+                    finally:
+                        old.lock.release()
+            session = self.visitors.get(token)
+            fresh = session is None
+            if fresh:
+                if not create:
+                    raise SessionUnavailable('Open the dashboard to start a demo session.')
+                self.prune(self.allocations, now)
+                if len(self.visitors)>=SESSION_LIMIT or len(self.allocations)>=24:
+                    raise SessionUnavailable('Demo capacity reached. Try again later.')
+                token = secrets.token_urlsafe(32)
+                session = Visitor(self.path.parent, now)
+                try:
+                    with self.db(session.path) as db:
+                        seed.initialize(db)
+                except Exception:
+                    session.directory.cleanup()
+                    raise
+                self.visitors[token] = session
+                self.allocations.append(now)
+            if not session.lock.acquire(blocking=False):
+                raise SessionUnavailable('A request is already running for this session.')
+            session.touched = now
+        try:
+            yield session, token if fresh else None
+        finally:
+            session.lock.release()
+
+    @staticmethod
+    def prune(history, now):
+        while history and now-history[0]>=60:
+            history.popleft()
+
+    def server_close(self):
+        super().server_close()
+        with self.lock:
+            for visitor in self.visitors.values():
+                visitor.directory.cleanup()
 
     @contextmanager
     def db(self, path=None):
@@ -37,13 +126,13 @@ class DemoServer(ThreadingHTTPServer):
     def fixture_base(self):
         return f'http://127.0.0.1:{self.server_port}'
 
-    def reset(self):
-        with NamedTemporaryFile(dir=self.path.parent, delete=False) as handle:
+    def reset(self, path):
+        with NamedTemporaryFile(dir=path.parent, delete=False) as handle:
             fresh = Path(handle.name)
         try:
             with self.db(fresh) as db:
                 seed.initialize(db)
-            os.replace(fresh, self.path)
+            os.replace(fresh, path)
         finally:
             if fresh.exists():
                 fresh.unlink()
@@ -88,12 +177,28 @@ def reconcile_receipts(db):
 
 
 class Handler(BaseHTTPRequestHandler):
+    def setup(self):
+        self.request.settimeout(12)
+        super().setup()
+
+    def visitor_cookie(self):
+        jar = SimpleCookie()
+        try:
+            jar.load(self.headers.get('Cookie',''))
+        except CookieError:
+            return None
+        return jar['portfolio_session'].value if 'portfolio_session' in jar else None
+
     def respond(self, status, result, mime='application/json'):
         body = result if isinstance(result, bytes) else json.dumps(result).encode()
         self.send_response(status)
         self.send_header('Content-Type', mime + ('' if mime.startswith('application/pdf') else '; charset=utf-8'))
         self.send_header('Content-Length', str(len(body)))
         self.send_header('Cache-Control', 'no-store')
+        token = getattr(self, 'new_visitor_token', None)
+        if token:
+            secure = '; Secure' if self.server.server_address[0]=='0.0.0.0' else ''
+            self.send_header('Set-Cookie', f'portfolio_session={token}; Path=/; HttpOnly; SameSite=Strict{secure}')
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.send_header('Referrer-Policy', 'no-referrer')
         self.send_header('Content-Security-Policy', "default-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'")
@@ -107,7 +212,9 @@ class Handler(BaseHTTPRequestHandler):
         self.log_message('%s %s', self.command, code)
 
     def local_fixture(self):
-        return self.client_address[0]=='127.0.0.1' and self.headers.get('Host')==f'127.0.0.1:{self.server.server_port}'
+        return (self.client_address[0]=='127.0.0.1'
+                and self.headers.get('Host')==f'127.0.0.1:{self.server.server_port}'
+                and secrets.compare_digest(self.headers.get('X-Demo-Fixture','').encode(),self.server.fixture_secret.encode()))
 
     def do_GET(self):
         url = urlsplit(self.path)
@@ -127,13 +234,17 @@ class Handler(BaseHTTPRequestHandler):
             if not self.local_fixture():
                 return self.respond(403, {'error': 'Local mock browser required.'})
             try:
-                with self.server.db() as db:
-                    document = runner_fixtures.fixture_html(db, path.split('/')[-1], parse_qs(url.query).get('step',['contact'])[0])
+                key = path.split('/')[-1]
+                with self.server.db(self.server.fixtures[key]) as db:
+                    document = runner_fixtures.fixture_html(db, key, parse_qs(url.query).get('step',['contact'])[0])
                 return self.respond(200, document, 'text/html')
-            except ValueError:
+            except (ValueError, KeyError):
                 return self.respond(404, {'error': 'Synthetic fixture not found.'})
+        if path not in ('/api/dashboard','/api/evidence') and not path.startswith(('/api/demo/job/','/api/demo/tasks/','/api/artifacts/')):
+            return self.respond(404, {'error': 'Resource not found.'})
         try:
-            with self.server.lock, self.server.db() as db:
+            with self.server.visitor(self.visitor_cookie(), path=='/api/dashboard') as (visitor, token), self.server.db(visitor.path) as db:
+                self.new_visitor_token = token
                 if path == '/api/dashboard':
                     return self.respond(200, summary(db))
                 if path == '/api/evidence':
@@ -156,6 +267,8 @@ class Handler(BaseHTTPRequestHandler):
                     if result:
                         mime = 'application/pdf' if filename.endswith('.pdf') else 'application/octet-stream'
                         return self.respond(200, result, mime)
+        except SessionUnavailable as error:
+            return self.respond(429 if self.visitor_cookie() or path=='/api/dashboard' else 404, {'error': str(error)})
         except (ValueError, KeyError):
             pass
         self.respond(404, {'error': 'Resource not found.'})
@@ -178,29 +291,39 @@ class Handler(BaseHTTPRequestHandler):
             if path == '/api/runner/mock-receipt':
                 if not self.local_fixture():
                     return self.respond(403, {'error': 'Local mock browser required.'})
-                with self.server.db() as db:
-                    receipt = runner_fixtures.simulation_receipt(db, self.read_json()['key'])
+                key = self.read_json()['key']
+                with self.server.db(self.server.fixtures[key]) as db:
+                    receipt = runner_fixtures.simulation_receipt(db, key)
                 return self.respond(200, receipt)
             if path not in {'/api/demo/reset','/api/demo/parse','/api/demo/generate','/api/demo/approve',
                             '/api/demo/tasks','/api/demo/answer','/api/demo/control'}:
                 return self.respond(403, {'error': 'This operation is disabled in Synthetic Demo.'})
             payload = self.read_json()
-            with self.server.lock:
+            with self.server.visitor(self.visitor_cookie(), False) as (visitor, _):
+                now = monotonic()
+                self.server.prune(visitor.actions, now)
+                if len(visitor.actions)>=40:
+                    raise SessionUnavailable('Too many actions. Retry in a minute.')
+                visitor.actions.append(now)
                 if path == '/api/demo/reset':
                     if payload.get('confirmed') is not True:
                         raise ValueError('Confirm the reset of Synthetic Demo data.')
-                    self.server.reset()
+                    self.server.reset(visitor.path)
                     return self.respond(200, {'reset': True})
-                with self.server.db() as db:
-                    result = self.action(db, path, payload)
+                with self.server.db(visitor.path) as db:
+                    result = self.action(db, path, payload, visitor.path)
             return self.respond(200, result)
+        except SessionUnavailable as error:
+            return self.respond(429 if self.visitor_cookie() else 403, {'error': str(error)})
         except (ValueError, KeyError, TypeError):
             return self.respond(400, {'error': 'Invalid demo input or current workflow state.'})
 
-    def action(self, db, path, payload):
+    def action(self, db, path, payload, visitor_path):
         if path == '/api/demo/parse':
             return parse_demo(db, payload['job_id'])
         if path == '/api/demo/generate':
+            if db.execute('SELECT COUNT(*) FROM material_versions').fetchone()[0]>=12:
+                raise ValueError('Reset the demo before generating more versions.')
             keys = payload['fact_ids']
             if not isinstance(keys, list) or not 1<=len(keys)<=6 or any(type(key) is not int for key in keys):
                 raise ValueError('Select verified facts.')
@@ -230,15 +353,23 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError('Choose a predefined synthetic answer.')
             return runner.confirm_question(db, {'task_id': row['task_id'], 'field_id': field['id'],
                 'scope': 'session', 'answer': payload['answer'], 'confirmed': payload.get('confirmed')})
-        result = runner.control(db, {key: payload[key] for key in ('task_id','action','confirmed','review_token')
-                                     if key in payload}, self.server.fixture_base)
+        if not self.server.browser_slot.acquire(blocking=False):
+            raise SessionUnavailable('The mock browser is busy. Retry shortly.')
+        fixture_key = row['fixture_key']
+        self.server.fixtures[fixture_key] = visitor_path
+        try:
+            result = runner.control(db, {key: payload[key] for key in ('task_id','action','confirmed','review_token')
+                                         if key in payload}, self.server.fixture_base, self.server.fixture_secret)
+        finally:
+            del self.server.fixtures[fixture_key]
+            self.server.browser_slot.release()
         if result['state']=='SUBMITTED':
             reconcile_receipts(db)
         return result
 
 
 def main():
-    path = ROOT/'runtime'/'portfolio.sqlite3'
+    path = ROOT/'runtime'/'portfolio-health.sqlite3'
     port = int(os.environ.get('PORT','8768'))
     if port in (8765,8766,8767):
         raise SystemExit('Choose a separate Portfolio port.')

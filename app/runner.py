@@ -302,7 +302,7 @@ def finish_receipt(db,row,receipt):
     state(db,row['task_id'],'SUBMITTED','Simulation receipt recorded; real Pipeline status unchanged.')
 
 
-def mock_execute(db,row,base,requested_token=None):
+def mock_execute(db,row,base,requested_token=None,fixture_secret=''):
     from playwright.sync_api import sync_playwright
     task = row['task_id']
     with db:
@@ -321,7 +321,7 @@ def mock_execute(db,row,base,requested_token=None):
             context = browser.new_context()
             def only_fixture(route):
                 if route.request.url.startswith(base+'/'):
-                    route.continue_()
+                    route.continue_(headers={**route.request.headers, 'X-Demo-Fixture': fixture_secret})
                 else:
                     route.abort()
             context.route('**/*',only_fixture)
@@ -386,7 +386,7 @@ def mock_execute(db,row,base,requested_token=None):
             browser.close()
 
 
-def control(db,p,base):
+def control(db,p,base,fixture_secret=''):
     task,action = p['task_id'],p['action']
     with LOCK:
         row = run_row(db,task)
@@ -416,7 +416,7 @@ def control(db,p,base):
             state(db,task,'RUNNING','Resume from saved checkpoint.' if old!='CREATED' else 'Started task.')
         try:
             if row['mode']=='simulation':
-                mock_execute(db,row,base,requested)
+                mock_execute(db,row,base,requested,fixture_secret)
             else:
                 if row['submitted_at'] or row['status']=='Submitted':
                     raise RunnerError('The Pipeline already records a submission for this job.')

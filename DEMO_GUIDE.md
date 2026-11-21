@@ -1,6 +1,6 @@
 # Walk through the Synthetic Demo
 
-Start the app using the [README](README.md) and open the local dashboard at `http://127.0.0.1:8768`. On a hosted instance, reset also clears progress for other visitors.
+Start the app using the [README](README.md) and open the local dashboard at `http://127.0.0.1:8768`. Reset clears only your browser session's progress.
 
 1. Open the dashboard and click **Reset demo** to clear the instance's demo progress.
 2. Choose **Synthetic Demo Backend Developer** for Mock PageUp or **Synthetic Demo Data Analyst** for Mock NEOGOV. Click **Open job & parse JD**.

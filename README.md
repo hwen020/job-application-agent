@@ -41,7 +41,7 @@ python tools/scan_release.py
 
 ## Hosting configuration
 
-The Docker image runs the app as a non-root user and listens on `0.0.0.0:10000` by default. The Render Blueprint selects Free, disables automatic deploys, and probes `GET /healthz`. The probe checks SQLite readiness without running the browser workflow. The hosted demo shares synthetic state across visitors. Free services can spin down and lose local SQLite state when the instance restarts.
+The Docker image runs the app as a non-root user and listens on `0.0.0.0` using the host's `PORT` (default `10000`). The Render Blueprint selects Free, disables automatic deploys, and probes `GET /healthz`. The probe checks SQLite readiness without running the browser workflow. Visitors receive separate synthetic databases. Restarting or spinning down the service discards demo progress and the next visit initializes fresh data.
 
 ## License
 
